@@ -1,253 +1,76 @@
-# Chapter 1 --- Folder Structure & Why References Exist
-
-### *Building a Professional C++ Foundation for Chimera*
-
-> **Project:** Chimera --- Building a Low-Latency Exchange in Modern C++
-
-------------------------------------------------------------------------
-
-# 🎯 Learning Objectives
-
-By the end of this chapter you will be able to:
-
--   Create a professional C++ project structure.
--   Explain why large C++ projects separate headers and source files.
--   Explain why references exist.
--   Differentiate pass-by-value from pass-by-reference.
--   Understand why `const T&` is the default choice for read-only APIs.
--   Predict the behavior of reference-based code before running it.
--   Apply references in Chimera's `Order` API.
-
-------------------------------------------------------------------------
-
-# ⚙️ Engineering Problem
-
-Imagine you are writing the first component of a matching engine.
-
-Your first instinct might be:
+# Chapter 1: Folder Structure & Why References Exist
 
-``` cpp
-void processOrder(Order order)
-{
-    // process order
-}
-```
+## Engineering Problem
 
-Nothing looks wrong.
+The first goal of Chimera was to build an `Order` struct that represents a single order in the matching engine. My initial instinct was to pass an `Order` object by value because it is simple and straightforward.
 
-Now imagine that `Order` stores:
+However, a real exchange processes millions of orders every second. An `Order` contains information such as the order ID, price, quantity, side, and timestamp. Passing the object by value creates a complete copy every time a function is called. If the order passes through validation, logging, risk management, and matching, multiple unnecessary copies are created. The real engineering problem was learning how to let functions operate on an `Order` efficiently without copying the entire object while still preventing accidental modification of data.
 
--   Order ID
--   Client ID
--   Side
--   Price
--   Quantity
--   Timestamp
--   Exchange metadata
+---
 
-Every function call copies the entire object.
+## Theory
 
-Now picture the order flowing through the engine:
+The primary concept introduced in this chapter was **references**.
 
-``` text
-Incoming Order
-      │
-      ▼
- Validation
-      │
-      ▼
- Risk Check
-      │
-      ▼
- Logging
-      │
-      ▼
- Matching Engine
-      │
-      ▼
- Persistence
-```
+A reference (`Order&`) is another name (alias) for an existing object. Unlike pass-by-value, passing by reference does not create a copy, making it much more efficient for large objects.
 
-If every stage copies the order, you've introduced multiple unnecessary
-memory copies before executing any real business logic.
+A `const Order&` provides the same efficiency while guaranteeing that the object cannot be modified. This allows functions to read large objects without copying them and without risking accidental changes.
 
-High-frequency trading systems process millions of orders every second.
-Tiny costs repeated millions of times become measurable latency.
+### Trade-offs
 
-> **Engineering Question**
->
-> How can a function operate on an object without copying it while still
-> preventing accidental modification?
+### Pass-by-Value
 
-------------------------------------------------------------------------
+**Advantages**
 
-# 📁 Project Setup
+- Original object cannot be modified.
+- Easy to understand.
 
-Create the following structure before writing any code.
+**Disadvantages**
 
-``` text
-chimera/
-├── CMakeLists.txt
-├── docs/
-│   └── chapter01_references.md
-├── include/
-│   └── chimera/
-│       └── order.hpp
-├── src/
-│   └── order.cpp
-├── tests/
-│   └── test_order.cpp
-└── experiments/
-    └── ch01_references.cpp
-```
+- Creates a complete copy.
+- Expensive for large objects.
 
-## Why not put everything in one folder?
+### Pass-by-Reference
 
-  -----------------------------------------------------------------------
-  Folder                            Purpose
-  --------------------------------- -------------------------------------
-  `include/chimera/`                Public headers. Prevents filename
-                                    collisions (`chimera/order.hpp`).
+**Advantages**
 
-  `src/`                            Implementation files (`.cpp`). Keeps
-                                    interface separate from
-                                    implementation.
+- No copy is created.
+- Very efficient.
+- Allows modification of the original object.
 
-  `tests/`                          Automated tests. Detect regressions
-                                    immediately.
+**Disadvantages**
 
-  `experiments/`                    Safe sandbox for learning. Never
-                                    affects production code.
+- Modifies the original object if not used carefully.
 
-  `docs/`                           Engineering notebook documenting what
-                                    you learned and why.
-  -----------------------------------------------------------------------
+### Pass-by-Const-Reference
 
-### ✅ Implementation Task
+**Advantages**
 
-Create every folder and file above.
+- No copy.
+- Prevents accidental modification.
+- Preferred for read-only access.
 
-Empty files are perfectly fine.
+### Complexity
 
-**Do not continue until the project skeleton exists.**
+| Method | Complexity |
+|--------|------------|
+| Pass by Value | O(size of object) |
+| Pass by Reference | O(1) |
+| Pass by Const Reference | O(1) |
 
-------------------------------------------------------------------------
+---
 
-# 📖 Theory
+## Experiment
 
-## What is a Reference?
+To understand the difference between pass-by-value and pass-by-reference, I created a simple experiment using a structure containing an integer array.
 
-A reference is another name (an **alias**) for an existing object.
+Before running the program, I predicted that modifying an object passed by value would not affect the original object, while modifying an object passed by reference would change the original data.
 
-``` cpp
-Order order;
-Order& ref = order;
-```
+After compiling and executing the program, the prediction was correct.
 
-No copy is created.
+### Code
 
-Both names refer to exactly the same object.
-
-    Memory
-
-    +--------------------+
-    | Order              |
-    | quantity = 100     |
-    | price = 250.50     |
-    +--------------------+
-          ▲
-          │
-     order     ref
-
-Changing `ref` changes `order`.
-
-------------------------------------------------------------------------
-
-## Properties of References
-
-✅ Must refer to an existing object.
-
-✅ Cannot be null.
-
-✅ Cannot be reseated.
-
-✅ No object copy is created.
-
-------------------------------------------------------------------------
-
-## `const Order&`
-
-``` cpp
-void validate(const Order& order);
-```
-
-Meaning:
-
-> "Borrow this object, but I promise not to modify it."
-
-Benefits:
-
--   No copy.
--   Compiler guarantees read-only access.
--   Clear API intent.
-
-------------------------------------------------------------------------
-
-## Complexity
-
-  Method              Complexity          Copies?
-  ------------------- ------------------- ---------
-  Pass by Value       O(size of object)   ✅ Yes
-  Pass by Reference   O(1)                ❌ No
-
-Regardless of how large `Order` becomes, a reference remains
-constant-time to pass.
-
-------------------------------------------------------------------------
-
-# 🧠 Internal Working
-
-Although references feel magical, the compiler implements them similarly
-to an automatically dereferenced pointer.
-
-Conceptually:
-
-``` cpp
-Order& ref = order;
-```
-
-behaves like
-
-``` text
-hiddenPointer ---> order
-```
-
-When you write:
-
-``` cpp
-ref.quantity = 50;
-```
-
-the compiler effectively performs:
-
-``` text
-(*hiddenPointer).quantity = 50;
-```
-
-The syntax is cleaner, but the underlying idea is simply accessing the
-original object.
-
-------------------------------------------------------------------------
-
-# 🧪 Experiment
-
-Before compiling anything:
-
-## Step 1
-
-Predict the output on paper.
-
-``` cpp
+```cpp
 #include <iostream>
 
 struct Big
@@ -270,157 +93,155 @@ int main()
     Big x;
 
     byValue(x);
-    std::cout << "After byValue: "
-              << x.data[0]
-              << "\n";
+    std::cout << "After byValue: " << x.data[0] << '\n';
 
     byRef(x);
-    std::cout << "After byRef: "
-              << x.data[0]
-              << "\n";
+    std::cout << "After byRef: " << x.data[0] << '\n';
 }
 ```
 
-## Step 2
+### Output
 
-Compile and run.
-
-``` bash
-g++ -std=c++20 experiments/ch01_references.cpp -o ch01
-./ch01
+```text
+After byValue: 1
+After byRef: 999
 ```
 
-## Step 3
+### Explanation
 
-Write down:
+Passing by value creates a copy of the object, so modifications affect only the copy.
 
--   Your prediction
--   Actual output
--   Why they differ
--   Draw the memory before and after each function call
+Passing by reference allows the function to work directly on the original object, so any modification changes the original data.
 
-> Do **not** skip the prediction. Thinking before compiling is one of
-> the fastest ways to improve as an engineer.
+This experiment demonstrated why references are preferred in performance-critical systems such as matching engines.
 
-------------------------------------------------------------------------
+---
 
-# 🏭 Production Discussion
+## Chimera Design
 
-🚧 **Intentionally postponed.**
+For this chapter, I organized the Chimera project using a professional C++ folder structure.
 
-Complete the experiment first.
-
-Only after you explain *why* the output changed will we discuss how real
-matching engines use references to eliminate unnecessary copies while
-preserving correctness.
-
-------------------------------------------------------------------------
-
-# 🐉 Chimera Design
-
-This chapter prepares us to write functions like:
-
-``` cpp
-int remainingQuantity(const Order&);
-bool isFullyFilled(const Order&);
-void applyFill(Order&, int);
+```text
+chimera/
+├── CMakeLists.txt
+├── docs/
+│   └── chapter01_references.md
+├── include/
+│   └── chimera/
+│       └── order.hpp
+├── src/
+│   └── order.cpp
+├── tests/
+│   └── test_order.cpp
+└── experiments/
+    └── ch01_references.cpp
 ```
 
-Notice the design:
+I implemented the `Order` structure containing:
 
--   Reading uses `const Order&`.
--   Modifying uses `Order&`.
+- `id`
+- `price`
+- `originalQuantity`
+- `filledQuantity`
+- `side`
+- `timeStamp`
 
-This distinction will become a core design principle throughout Chimera.
+I also implemented the helper functions:
 
-------------------------------------------------------------------------
+- `applyFill()`
+- `remainingQuantity()`
+- `isFullyFilled()`
 
-# 💻 Implementation
+Finally, I replaced manual console output with automated tests using `assert()` so that failures are detected automatically.
 
-Complete the following:
+---
 
--   [ ] Create the project structure.
--   [ ] Create all empty files.
--   [ ] Create `experiments/ch01_references.cpp`.
--   [ ] Run the experiment.
--   [ ] Record your observations in `docs/chapter01_references.md`.
+## Bugs Found & Fixed
 
-------------------------------------------------------------------------
+### Bug 1 – Incorrect Variable Name
 
-# 🔍 Code Review Checklist
+**Problem**
 
-Can you answer these?
+The variable was named `origianQuantity`.
 
--   Why is passing `Order` by value expensive?
--   What is a reference?
--   What is the difference between a pointer and a reference?
--   Why use `const Order&`?
--   When should you use a non-const reference?
+**Root Cause**
 
-------------------------------------------------------------------------
+A spelling mistake during implementation.
 
-# ⚠️ Common Mistakes
+**Fix**
 
--   Passing large objects by value unnecessarily.
--   Thinking references create copies.
--   Assuming `const` creates a copy.
--   Forgetting that modifying a reference modifies the original object.
+Renamed it to `originalQuantity` throughout the project.
 
-------------------------------------------------------------------------
+---
 
-# 🚀 Performance Notes
+### Bug 2 – Incorrect Order ID Type
 
-Performance is rarely lost because of one huge mistake.
+**Problem**
 
-It is usually lost because of thousands of tiny inefficiencies repeated
-millions of times.
+The project design specified `uint64_t`, but the implementation used `uint32_t`.
 
-Avoiding unnecessary object copies is one of the simplest and most
-effective optimizations in systems programming.
+**Root Cause**
 
-------------------------------------------------------------------------
+The implementation did not match the original design.
 
-# 🏋️ Exercises
+**Fix**
 
-1.  Increase the array size to 10,000 elements and rerun the experiment.
-2.  Print the address of `x` inside `main()` and inside `byRef()`.
-3.  Explain why the addresses are identical.
-4.  Replace `Big&` with `const Big&`. What changes?
-5.  Explain, in your own words, why references are essential in a
-    matching engine.
+Changed the type to `uint64_t` to maintain consistency across the project.
 
-------------------------------------------------------------------------
+---
 
-# 📌 Summary
+### Bug 3 – Redundant Boolean Expression
 
--   References are aliases, not copies.
--   `const T&` provides efficient read-only access.
--   `T&` allows controlled modification.
--   Separating headers, sources, tests, docs, and experiments creates
-    maintainable projects.
--   Understanding references is the first step toward writing
-    low-latency C++ systems.
+**Problem**
 
-------------------------------------------------------------------------
-
-# 🌱 Git Commit
-
-``` bash
-git add .
-
-git commit -m "Chapter 1: Project structure and C++ references"
+```cpp
+return true ? (order.filledQuantity == order.originalQuantity) : false;
 ```
 
-------------------------------------------------------------------------
+**Root Cause**
 
-# ⏭️ What's Next
+An unnecessary ternary operator was used.
 
-In this chapter you learned how to borrow data efficiently.
+**Fix**
 
-Next, we'll answer an equally important question:
+Simplified the code to:
 
-> **How can the compiler stop us from accidentally modifying borrowed
-> data?**
+```cpp
+return order.filledQuantity == order.originalQuantity;
+```
 
-The answer is **const correctness**, one of the most powerful design
-principles in modern C++.
+---
+
+### Bug 4 – Manual Testing Instead of Assertions
+
+**Problem**
+
+The original tests relied on reading console output manually.
+
+**Root Cause**
+
+Console output cannot automatically detect failures.
+
+**Fix**
+
+Replaced print statements with `assert()`.
+
+The final tests verify:
+
+- Partial fill
+- Exact fill
+- Rejected overfill
+
+This makes the tests automatically fail whenever the implementation behaves incorrectly.
+
+---
+
+## Lessons Learned
+
+- Always use pass-by-reference for large objects when copying is unnecessary.
+- Use `const` references whenever a function only needs to read data.
+- Good variable names improve readability and reduce future bugs.
+- Keep data types consistent across the entire project.
+- Prefer simple, readable code over unnecessarily complex expressions.
+- Automated testing with `assert()` is much more reliable than manually checking console output.
+- Organizing the project into a clean folder structure makes it easier to maintain and extend as the project grows.

@@ -1,438 +1,150 @@
-# Chapter 2 --- `std::map` and Why the Order Book Needs a Sorted Container
-
-### *Choosing the Right Data Structure for Price Discovery*
-
-> **Project:** Chimera --- Building a Low-Latency Exchange in Modern C++
-
-------------------------------------------------------------------------
-
-Good --- you got the right result, and your instinct is close, but let's
-sharpen it because this distinction matters a lot later when we compare
-references vs pointers.
-
-Small correction: it's not quite "we're changing the value at that
-particular memory address" --- because even in byValue, b has a memory
-address too (its own, on the stack). The real reason is:
-
-byValue(Big b) --- a brand new Big object is constructed, and its bytes
-are copied from x. Inside the function, b and x are two completely
-separate objects living at two different addresses. Modifying b cannot
-touch x. byRef(Big& b) --- no new object is constructed. b is not a
-copy, it's another name for x itself. There is only one object, one
-address, one set of bytes. Modifying b is modifying x, because they are
-the same object.
-
-That's the core mental model to keep: pass-by-value = two objects.
-Pass-by-reference = one object, two names.
-
-STEP 4: Production Discussion
-
-At firms like Jane Street or Citadel, this isn't academic --- the "hot
-path" (the exact sequence of function calls between receiving a packet
-and generating a trade) is measured in nanoseconds, and every
-unnecessary copy is a candidate for deletion during profiling. The
-convention you'll see in real low-latency codebases:
-
-Small trivial types (an int, a double, a Price if it's just a wrapped
-int64_t) --- pass by value. Copying 8 bytes is cheaper than the
-indirection of a reference in some cases, and simpler to reason about.
-Anything larger, or anything you want to guarantee isn't copied (like
-our Order) --- pass by const& if read-only, by & if the function needs
-to mutate it.
-
-There's no universal "always use references" rule --- it's a judgment
-call based on size and intent. That's the trade-off discussion; there's
-no single correct answer, just informed defaults.
-
-STEP 5: Chimera Design
-
-Now let's decide where this applies to Order.
-
-Question for you before I give the task: an Order will need fields like
-an ID, price, quantity, side (buy/sell), and timestamp. When we later
-write functions like validateOrder(...), logOrder(...), matchOrder(...)
---- which of these do you think should take const Order&, and which (if
-any) might need plain Order&? Give me your reasoning, even if you're not
-fully sure --- I want to see your judgment before I confirm it.
-
-Scrutinized code for typos, type mismatches, and inadequate test
-assertions Scrutinized code for typos, type mismatches, and inadequate
-test assertions
-
-Nice work --- the core logic is actually correct (I traced through your
-test by hand and it produces the right guard behavior). But this is a
-real PR review, and there are things I would not approve yet. Let's go
-through it like a senior engineer would on your team.
-
-Correctness ✅
-
-Your applyFill guard is right:
-
-cpp if(order.origianQuantity \>= (order.filledQuantity + fillQuantity))
-
-This correctly rejects the overfill. I traced your test manually: 75
-filled → 25 remaining → +25 fills to exactly 100 → +25 more gets
-rejected, staying at 100. Logic holds.
-
-Issues I'd flag before merging
-
-1.  Naming --- origianQuantity This is a typo (origian instead of
-    original) but I'm not flagging it as "oops fix your spelling" ---
-    I'm flagging it because naming is API design. Anyone reading this
-    struct six months from now, or a new hire joining your team, will
-    trip on it, maybe even copy the typo into new code out of
-    consistency. Fix it everywhere: header, .cpp, tests.
-
-2.  id type mismatch We designed Order.id as uint64_t in STEP 5. You
-    implemented uint32_t id. This isn't just cosmetic --- if some other
-    part of Chimera (an OrderIndex map, a network protocol field)
-    expects uint64_t and you pass this uint32_t, you get implicit
-    narrowing/widening conversions scattered everywhere, which is
-    exactly how subtle bugs creep into real systems. Pick one width and
-    be consistent across the whole codebase from day one.
-
-3.  isFullyFilled --- redundant ternary
-
-cpp return true ? (order.filledQuantity == order.origianQuantity) :
-false;
-
-true ? X : false is always just X. This is a code smell --- it signals
-either uncertainty about boolean expressions, or leftover code from an
-earlier iteration you forgot to clean up. A senior reviewer would bounce
-this back immediately. It should simply be:
-
-cpp return order.filledQuantity == order.originalQuantity;
-
-4.  Your "tests" aren't tests --- they're console output you have to
-    read yourself
-
-This is the most important issue. Look at your test_order.cpp: it prints
-numbers, and you are the one who has to look at the output and judge
-"yep, that's correct." That doesn't scale, and it's not how professional
-engineering works. Six months from now, if someone refactors applyFill
-and breaks the overfill guard, nobody is going to manually re-read
-console output --- they need the test itself to fail loudly and
-automatically.
-
-The acceptance criteria said "test cases," not "print statements." Real
-test cases assert an expected value and crash/report failure if it's
-wrong:
-
-cpp #include `<cassert>`{=html} // ... applyFill(order, 75);
-assert(order.filledQuantity == 75); assert(remainingQuantity(order) ==
-25); assert(!isFullyFilled(order));
-
-If that assert fires, the program itself tells you something is broken
---- you don't have to eyeball anything.
-
-Your revision task (before we move to Chapter 2) Fix origianQuantity →
-originalQuantity everywhere. Change id to uint64_t in the header.
-Simplify isFullyFilled. Rewrite test_order.cpp to use `<cassert>`{=html}
-with real assertions for your 3 cases (partial fill, exact fill,
-rejected overfill) --- keep the std::cout if you want for readability,
-but the assertions are what actually make it a test.
-
-Paste the revised three files back and I'll approve or push back again.
-
-order.hpp
-
-20 lines
-
-HPP
-
-order.cpp
-
-22 lines
-
-CPP
-
-test_order.cpp
-
-23 lines
-
-CPP
-
-i have fixed the errors and typi
-
-Validated fixes and identified incomplete test coverage gaps Validated
-fixes and identified incomplete test coverage gaps
-
-Good --- the header and implementation are clean now. originalQuantity,
-uint64_t id, the simplified isFullyFilled --- all correct. That part is
-approved.
-
-But I'm bouncing the test file back. Look at what you actually covered:
-
-cpp applyFill(order, 75); assert(order.filledQuantity == 75);
-assert(remainingQuantity(order) == 25); assert(!isFullyFilled(order));
-
-That's only 1 of the 3 required cases --- the partial fill. You dropped
-the other two:
-
-Exact fill to zero remaining --- you never call applyFill(order, 25)
-again to bring it to exactly 100, and never assert isFullyFilled(order)
-== true. Rejected overfill --- you never test that calling applyFill
-with a quantity that would exceed originalQuantity actually gets
-rejected and leaves filledQuantity unchanged.
-
-This matters more than it looks. The overfill guard is the single most
-important invariant in this whole file --- it's the line that prevents
-Chimera from ever reporting more shares filled than were ordered. If you
-don't have a test that actively tries to break it and confirms it holds,
-you have no proof the guard works --- you only have proof the happy path
-works. In production, the happy path is never what takes down an
-exchange.
-
-Task: finish the test file
-
-Add to main():
-
-After your existing partial-fill block, call applyFill(order, 25) to
-bring it to exactly 100, and assert isFullyFilled(order) == true and
-remainingQuantity(order) == 0. Then attempt an overfill --- call
-applyFill(order, 10) (or any positive amount) and assert that
-filledQuantity is still 100, i.e. the call had no effect.
-
-Once all three cases have real assertions, compile and run it (g++
--std=c++20 test_order.cpp order.cpp -o test_order && ./test_order) --- a
-clean run with no assertion failures is your proof of correctness, not
-eyeballed console output.
-
-Paste the final test file, and confirm it ran clean. Once that's in,
-we'll do STEP 9 (docs) and STEP 10 (git commit) to close out Chapter 1,
-then move to Chapter 2: std::map and why the order book needs a sorted
-container.
-
-move to the next chapter
-
-Acknowledged incomplete work, pivoted toward next chapter Acknowledged
-incomplete work, pivoted toward next chapter
-
-Noted --- I'll hold you to finishing that test file before we write
-actual Chimera book code, since an unverified overfill guard is exactly
-the kind of thing that bites you in Phase 2. Consider it a standing item
-on your list. For now, let's move forward.
-
-Chapter 2: std::map and Why the Order Book Needs a Sorted Container STEP
-1: Engineering Problem
-
-Right now you have a single Order. But an exchange doesn't have one
-order --- it has thousands of buy orders and thousands of sell orders
-sitting at different prices, waiting to match.
-
-Here's the actual problem: at any instant, the matching engine must
-answer one question as fast as physically possible: "What is the current
-best bid (highest buy price) and best ask (lowest sell price)?" Every
-single incoming order needs this answer to decide whether it can match
-immediately or must rest in the book.
-
-Naive idea: store all buy orders in a std::vector`<Order>`{=html} and
-scan it every time to find the max price. That's O(n) per lookup. With
-thousands of resting orders and this check happening on every incoming
-order, you've built an exchange that gets slower as it gets busier ---
-the opposite of what you want.
-
-So the real question: what data structure gives you fast "find the best
-price" and fast "insert a new price level" at the same time?
-
-STEP 2: Theory
-
-This is where std::map enters --- but before syntax, understand why it
-exists.
-
-std::map\<Key, Value\> in C++ keeps its keys always sorted. Internally
-it's a Red-Black Tree (a self-balancing binary search tree) --- we will
-dig into how that balancing works in a later lesson, but for now, know
-what it buys you:
-
-Insert a new key: O(log n) Find the smallest or largest key: O(log n)
-(or O(1) if you cache an iterator to begin()) Iterate all keys in sorted
-order: O(n), already sorted, no extra sort step needed
-
-Compare to alternatives:
-
-std::vector --- O(1) access by index, but finding max/inserting in
-sorted position is O(n) unless you keep it sorted and pay for shifting
-elements. std::unordered_map --- O(1) average insert/lookup by key, but
-no ordering at all. You cannot ask it "give me the smallest key" without
-scanning everything. Great for "does this order ID exist," useless for
-"what's the best price."
-
-This is the trade-off: std::map sacrifices the O(1) of a hash map in
-exchange for guaranteed ordering. For an order book, where "what's the
-best price" is the single most frequent, most latency-critical query,
-that trade is worth it.
-
-Complexity summary for what we're about to build:
-
-Operation std::vector (unsorted) std::unordered_map std::map Insert O(1)
-O(1) avg O(log n) Find best price O(n) impossible (no order) O(1)
-(begin/rbegin) Iterate sorted O(n log n) impossible O(n) STEP 3:
-Experiment
-
-Before touching Chimera, build intuition in experiments/ch02_map.cpp.
-Predict the output first, then compile and run.
-
-cpp #include `<iostream>`{=html} #include `<map>`{=html}
-
-int main() { std::map\<int, std::string\> prices;
-
-    prices[105] = "order_A";
-    prices[101] = "order_B";
-    prices[110] = "order_C";
-    prices[103] = "order_D";
-
-    std::cout << "Iterating the map:\n";
-    for (const auto& [price, name] : prices) {
-        std::cout << price << " -> " << name << "\n";
-    }
-
-    std::cout << "Smallest price (begin): " << prices.begin()->first << "\n";
-    std::cout << "Largest price (rbegin): " << prices.rbegin()->first << "\n";
-
-}
-
-Write down, before compiling:
-
-What order will the prices print in the loop --- insertion order, or
-something else? What will begin() and rbegin() give you?
-
-Then compile it (g++ -std=c++20 ch02_map.cpp -o ch02 && ./ch02), compare
-to your prediction, and tell me --- in your own words --- why the map
-behaves this way given what we just covered in STEP 2.
-
-# Chapter 2 — std::map and the Order Book
+# Chapter 2: std::map and Why the Order Book Needs a Sorted Container
 
 ## Engineering Problem
 
-An electronic exchange must answer two important questions very quickly:
+In the previous chapter, Chimera only handled a single `Order`. However, a real exchange never deals with just one order. At any moment, thousands of buy and sell orders are resting in the order book, waiting to be matched. Every incoming order must quickly determine whether it can trade immediately or should be stored for future matching.
 
-- What is the highest bid?
-- What is the lowest ask?
+The most important question the matching engine asks is:
 
-These operations happen for every incoming order. If finding the best price is slow, the entire matching engine becomes slow.
+- What is the highest bid (best buy price)?
+- What is the lowest ask (best sell price)?
 
-Our goal was to choose a data structure that keeps price levels organized while allowing fast insertion and fast retrieval of the best price.
+A naive solution would be to store all orders inside a `std::vector` and scan the entire container every time a new order arrives. While simple, this approach requires checking every order to find the best price, making the lookup slower as the order book grows. Since every incoming order performs this lookup, an exchange built this way becomes slower under heavier trading activity, which is exactly the opposite of the desired behavior.
+
+To solve this problem efficiently, the order book needs a data structure that supports fast insertion while always keeping prices sorted.
 
 ---
 
-# Why std::map?
+## Theory
 
-`std::map` stores key-value pairs in sorted order.
+The C++ Standard Library provides `std::map`, which stores key-value pairs in sorted order. Internally, `std::map` is implemented as a Red-Black Tree, a self-balancing binary search tree. The balancing algorithm guarantees that the tree remains approximately balanced after every insertion and deletion, allowing operations to remain logarithmic in complexity.
 
-Our key is the price.
+For an order book, the key is the price and the value is a `PriceLevel`, which stores all orders resting at that price.
 
 ```cpp
 std::map<int64_t, PriceLevel> bids_;
-std::map<int64_t, PriceLevel> asks_;
+std::map<int64_t, PriceLevel> ask_;
 ```
 
-Each key represents one price level.
+Important properties of `std::map`:
 
-Each value stores all orders resting at that price.
+- Insert a new price level: **O(log n)**
+- Find a price level: **O(log n)**
+- Remove a price level: **O(log n)**
+- Iterate through prices in sorted order: **O(n)**
 
-Example:
+### Comparison with Other Containers
 
-```
-100
- ├── Order #1
- ├── Order #2
- └── Order #3
+### std::vector
 
+Advantages:
+
+- O(1) random access by index.
+- Excellent cache locality.
+
+Disadvantages:
+
+- Finding the highest or lowest price requires scanning the entire container.
+- Keeping prices sorted requires shifting elements after insertion.
+
+For an order book, this leads to poor scalability.
+
+---
+
+### std::unordered_map
+
+Advantages:
+
+- Average O(1) insertion and lookup.
+
+Disadvantages:
+
+- Keys have no ordering.
+- Cannot efficiently determine the highest or lowest price.
+- Requires scanning every element to find the best bid or ask.
+
+While `unordered_map` is excellent for looking up orders by ID, it is unsuitable for maintaining sorted market prices.
+
+---
+
+### std::map
+
+Advantages:
+
+- Automatically maintains sorted prices.
+- Efficient insertion and lookup.
+- Immediate access to the lowest and highest prices using iterators.
+
+Trade-offs:
+
+- Slightly slower insertion than a hash table.
+- More memory overhead due to tree nodes.
+
+For an order book, maintaining sorted prices is far more important than achieving average O(1) lookup.
+
+---
+
+## Experiment
+
+Before integrating `std::map` into Chimera, I created a small experiment to understand how it behaves.
+
+I inserted prices in the following order:
+
+```text
+105
 101
- └── Order #4
+110
+103
+```
 
+Before running the program, I expected one of two possibilities:
+
+1. The map would preserve insertion order.
+2. The map would automatically sort the prices.
+
+After compiling and executing the program, the output was:
+
+```text
+101
+103
 105
- ├── Order #5
- └── Order #6
+110
 ```
 
-Because the keys stay sorted automatically, finding the best price becomes easy.
+This confirmed that `std::map` always keeps its keys sorted regardless of insertion order.
+
+I also observed:
+
+```cpp
+prices.begin()->first
+```
+
+returned the smallest price.
+
+```cpp
+prices.rbegin()->first
+```
+
+returned the largest price.
+
+This behavior makes `std::map` a natural fit for an order book because the best ask can always be found at the beginning of the map, while the best bid can be obtained from the reverse beginning iterator.
+
+One additional lesson from the experiment was understanding the behavior of `operator[]`. Accessing a missing key automatically inserts a new element into the map. Because this operation modifies the container, `operator[]` cannot be used inside a `const` member function. Instead, `find()` must be used when only reading data.
 
 ---
 
-# Why not std::vector?
+## Chimera Design
 
-A vector is excellent when data is stored sequentially.
+The OrderBook was designed around the concept of price levels rather than individual orders.
 
-However, prices are sparse.
-
-Example:
-
-```
-100
-105
-240
-1000
+```cpp
+std::map<int64_t, PriceLevel> bids_;
+std::map<int64_t, PriceLevel> ask_;
 ```
 
-A vector would either
+Each map key represents a unique market price.
 
-- waste memory
-
-or
-
-- require searching through the entire container.
-
-Insertion into the middle of a vector is also O(n).
-
-That is unacceptable for an order book.
-
----
-
-# Why not std::unordered_map?
-
-`unordered_map` gives average O(1) lookup.
-
-However, it does **not** keep keys ordered.
-
-Example:
-
-```
-105
-100
-240
-```
-
-There is no concept of
-
-- highest bid
-- lowest ask
-
-without scanning every key.
-
-That scan is O(n).
-
-Since an exchange asks for the best price constantly, this is too expensive.
-
----
-
-# Why std::map?
-
-`std::map` is implemented as a balanced binary search tree.
-
-Properties:
-
-- ordered keys
-- O(log n) insertion
-- O(log n) lookup
-- O(log n) deletion
-
-Most importantly:
-
-```
-Lowest ask  -> begin()
-
-Highest bid -> rbegin()
-```
-
-No searching required.
-
----
-
-# Price Levels
-
-Instead of storing one order per price, each price owns a queue of orders.
+Each `PriceLevel` stores all resting orders at that price.
 
 ```cpp
 struct PriceLevel
@@ -442,155 +154,118 @@ struct PriceLevel
 };
 ```
 
-The map becomes
+The order book exposes four primary operations:
 
-```
-100
- ├── Order A
- ├── Order B
- └── Order C
+- `addBid()`
+- `addAsk()`
+- `bestBid()`
+- `bestAsk()`
 
-101
- └── Order D
-```
+A bid is inserted into the bid map, while an ask is inserted into the ask map. Since both maps remain sorted automatically, retrieving the highest bid or lowest ask requires only accessing the appropriate iterator instead of scanning every order.
 
-This naturally supports FIFO matching.
+This design also prepares the project for future chapters, where each price level will act as a FIFO queue during order matching.
 
 ---
 
-# Bugs Found During Development
+## Bugs Found & Fixed
 
-## Bug 1 — Swapped Bid/Ask Maps
+### Bug 1 — Swapped bestBid() and bestAsk()
 
-The first implementation accidentally read the wrong map.
+**Problem**
 
-Example:
+The first implementation accidentally searched the wrong container.
 
+`bestBid()` read from the ask map.
+
+`bestAsk()` read from the bid map.
+
+As a result, the reported best prices were incorrect.
+
+**Root Cause**
+
+The two maps had similar implementations, leading to an accidental mix-up during coding.
+
+**Fix**
+
+Each function was updated to access the correct container.
+
+```cpp
+bestBid()  -> bids_
+bestAsk()  -> ask_
 ```
-bestBid()
-```
-
-looked inside the ask map.
-
-Similarly,
-
-```
-bestAsk()
-```
-
-looked inside the bid map.
-
-This produced completely incorrect prices.
-
-### Lesson
-
-Always verify that public APIs are reading from the correct internal data structure.
 
 ---
 
-## Bug 2 — Copy Instead of Reference
+### Bug 2 — Copy Instead of Reference
 
-Incorrect:
+**Problem**
+
+The first implementation used:
 
 ```cpp
 auto level = bids_[price];
 ```
 
-This copies the `PriceLevel`.
+This copied the `PriceLevel` stored inside the map.
 
-Changes were made to the copy instead of the object stored inside the map.
+Any modifications were applied only to the temporary copy.
 
-Correct:
+After the function returned, the copy was destroyed and the map remained unchanged.
+
+**Root Cause**
+
+I forgot that `auto` creates a copy unless a reference is explicitly requested.
+
+**Fix**
+
+The implementation was changed to:
 
 ```cpp
 auto& level = bids_[price];
 ```
 
-The reference modifies the actual object stored inside the map.
+The reference points directly to the object inside the map, allowing modifications to update the actual stored price level.
 
-### Lesson
-
-Copies create new objects.
-
-References give another name to an existing object.
-
-This directly connects to Chapter 1 on C++ references.
+This bug directly reinforced the concept learned in Chapter 1 about the difference between copies and references.
 
 ---
 
-## Bug 3 — Overwriting Instead of Appending
+### Bug 3 — Overwriting Instead of Appending
 
-Incorrect:
+**Problem**
+
+The initial implementation inserted orders using:
 
 ```cpp
 level.orders = {order};
 ```
 
-Every new order replaced the entire list.
+Every new order replaced the existing order list.
 
-Existing orders disappeared.
+If two orders arrived at the same price, the older order disappeared from the book.
 
-Correct:
+**Root Cause**
+
+I mistakenly assigned a new list instead of adding to the existing list.
+
+**Fix**
+
+The implementation now uses:
 
 ```cpp
 level.orders.push_back(order);
 ```
 
-Now every order joins the end of the FIFO queue.
-
-### Lesson
-
-Assignment replaces a container.
-
-`push_back()` appends to a container.
-
-Understanding container operations is just as important as understanding references.
+This appends the new order to the end of the existing FIFO queue while preserving all previously resting orders.
 
 ---
 
-# Complexity
+## Lessons Learned
 
-| Operation | Complexity |
-|-----------|-----------:|
-| Insert price level | O(log n) |
-| Find price level | O(log n) |
-| Remove price level | O(log n) |
-| Best ask | O(1) |
-| Best bid | O(1) |
+This chapter taught me that selecting the correct data structure is just as important as writing correct algorithms. A `std::vector` or `std::unordered_map` may appear simpler, but neither provides the ordered behavior required by an exchange.
 
----
+I also learned that small implementation details can create serious bugs. Forgetting a reference caused updates to disappear silently, while replacing a container instead of appending removed existing orders without any compiler error. These mistakes emphasized the importance of understanding C++ value semantics and container operations instead of relying on intuition.
 
-# Trade-offs
+Finally, I learned that good tests should verify internal behavior rather than only checking visible outputs. Simply confirming the best bid was correct would not detect an overwritten order list. Future tests should be designed to catch these kinds of subtle bugs before they reach production.
 
-## Advantages
-
-- Keys stay sorted automatically.
-- Excellent fit for price-based lookups.
-- Easy best-price retrieval.
-- Predictable performance.
-
-## Disadvantages
-
-- Slower than hash tables for raw lookup.
-- Higher memory usage than vectors.
-- Tree nodes are allocated individually.
-
-For an order book, ordered prices are far more valuable than constant-time hashing.
-
-`std::map` is therefore an excellent first implementation.
-
----
-
-# What We Learned
-
-By the end of this chapter we learned:
-
-- why exchanges organize orders by price level
-- why `std::map` is a natural data structure for an order book
-- the difference between copying and referencing objects
-- how `operator[]` behaves on maps
-- why replacing a container is different from appending to it
-- how small implementation mistakes can silently corrupt an order book
-- how tests should verify behavior rather than only expected outputs
-
-These ideas form the foundation for implementing a matching engine in the next chapters.
+By the end of this chapter, I understand why modern matching engines organize orders into sorted price levels, why `std::map` is an appropriate first implementation, and how references, container operations, and careful testing all work together to build a reliable order book.
