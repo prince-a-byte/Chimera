@@ -11,6 +11,8 @@ class OrderBook
     int64_t bestBid() const;
     int64_t bestAsk() const;
 
+    size_t bidOrderCount(int64_t price) const;
+    size_t askOrderCount(int64_t price) const;
 
     private:
     std::map<int64_t, PriceLevel> bids_;

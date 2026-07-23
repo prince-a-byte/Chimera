@@ -300,3 +300,297 @@ something else? What will begin() and rbegin() give you?
 Then compile it (g++ -std=c++20 ch02_map.cpp -o ch02 && ./ch02), compare
 to your prediction, and tell me --- in your own words --- why the map
 behaves this way given what we just covered in STEP 2.
+
+# Chapter 2 — std::map and the Order Book
+
+## Engineering Problem
+
+An electronic exchange must answer two important questions very quickly:
+
+- What is the highest bid?
+- What is the lowest ask?
+
+These operations happen for every incoming order. If finding the best price is slow, the entire matching engine becomes slow.
+
+Our goal was to choose a data structure that keeps price levels organized while allowing fast insertion and fast retrieval of the best price.
+
+---
+
+# Why std::map?
+
+`std::map` stores key-value pairs in sorted order.
+
+Our key is the price.
+
+```cpp
+std::map<int64_t, PriceLevel> bids_;
+std::map<int64_t, PriceLevel> asks_;
+```
+
+Each key represents one price level.
+
+Each value stores all orders resting at that price.
+
+Example:
+
+```
+100
+ ├── Order #1
+ ├── Order #2
+ └── Order #3
+
+101
+ └── Order #4
+
+105
+ ├── Order #5
+ └── Order #6
+```
+
+Because the keys stay sorted automatically, finding the best price becomes easy.
+
+---
+
+# Why not std::vector?
+
+A vector is excellent when data is stored sequentially.
+
+However, prices are sparse.
+
+Example:
+
+```
+100
+105
+240
+1000
+```
+
+A vector would either
+
+- waste memory
+
+or
+
+- require searching through the entire container.
+
+Insertion into the middle of a vector is also O(n).
+
+That is unacceptable for an order book.
+
+---
+
+# Why not std::unordered_map?
+
+`unordered_map` gives average O(1) lookup.
+
+However, it does **not** keep keys ordered.
+
+Example:
+
+```
+105
+100
+240
+```
+
+There is no concept of
+
+- highest bid
+- lowest ask
+
+without scanning every key.
+
+That scan is O(n).
+
+Since an exchange asks for the best price constantly, this is too expensive.
+
+---
+
+# Why std::map?
+
+`std::map` is implemented as a balanced binary search tree.
+
+Properties:
+
+- ordered keys
+- O(log n) insertion
+- O(log n) lookup
+- O(log n) deletion
+
+Most importantly:
+
+```
+Lowest ask  -> begin()
+
+Highest bid -> rbegin()
+```
+
+No searching required.
+
+---
+
+# Price Levels
+
+Instead of storing one order per price, each price owns a queue of orders.
+
+```cpp
+struct PriceLevel
+{
+    int64_t price;
+    std::list<Order> orders;
+};
+```
+
+The map becomes
+
+```
+100
+ ├── Order A
+ ├── Order B
+ └── Order C
+
+101
+ └── Order D
+```
+
+This naturally supports FIFO matching.
+
+---
+
+# Bugs Found During Development
+
+## Bug 1 — Swapped Bid/Ask Maps
+
+The first implementation accidentally read the wrong map.
+
+Example:
+
+```
+bestBid()
+```
+
+looked inside the ask map.
+
+Similarly,
+
+```
+bestAsk()
+```
+
+looked inside the bid map.
+
+This produced completely incorrect prices.
+
+### Lesson
+
+Always verify that public APIs are reading from the correct internal data structure.
+
+---
+
+## Bug 2 — Copy Instead of Reference
+
+Incorrect:
+
+```cpp
+auto level = bids_[price];
+```
+
+This copies the `PriceLevel`.
+
+Changes were made to the copy instead of the object stored inside the map.
+
+Correct:
+
+```cpp
+auto& level = bids_[price];
+```
+
+The reference modifies the actual object stored inside the map.
+
+### Lesson
+
+Copies create new objects.
+
+References give another name to an existing object.
+
+This directly connects to Chapter 1 on C++ references.
+
+---
+
+## Bug 3 — Overwriting Instead of Appending
+
+Incorrect:
+
+```cpp
+level.orders = {order};
+```
+
+Every new order replaced the entire list.
+
+Existing orders disappeared.
+
+Correct:
+
+```cpp
+level.orders.push_back(order);
+```
+
+Now every order joins the end of the FIFO queue.
+
+### Lesson
+
+Assignment replaces a container.
+
+`push_back()` appends to a container.
+
+Understanding container operations is just as important as understanding references.
+
+---
+
+# Complexity
+
+| Operation | Complexity |
+|-----------|-----------:|
+| Insert price level | O(log n) |
+| Find price level | O(log n) |
+| Remove price level | O(log n) |
+| Best ask | O(1) |
+| Best bid | O(1) |
+
+---
+
+# Trade-offs
+
+## Advantages
+
+- Keys stay sorted automatically.
+- Excellent fit for price-based lookups.
+- Easy best-price retrieval.
+- Predictable performance.
+
+## Disadvantages
+
+- Slower than hash tables for raw lookup.
+- Higher memory usage than vectors.
+- Tree nodes are allocated individually.
+
+For an order book, ordered prices are far more valuable than constant-time hashing.
+
+`std::map` is therefore an excellent first implementation.
+
+---
+
+# What We Learned
+
+By the end of this chapter we learned:
+
+- why exchanges organize orders by price level
+- why `std::map` is a natural data structure for an order book
+- the difference between copying and referencing objects
+- how `operator[]` behaves on maps
+- why replacing a container is different from appending to it
+- how small implementation mistakes can silently corrupt an order book
+- how tests should verify behavior rather than only expected outputs
+
+These ideas form the foundation for implementing a matching engine in the next chapters.
